@@ -3,7 +3,10 @@ import { OpenAIEmbeddings } from 'langchain/embeddings';
 import { PineconeStore } from 'langchain/vectorstores';
 import { makeChain } from '@/utils/makechain';
 import { pinecone } from '@/utils/pinecone-client';
-import { PINECONE_INDEX_NAME, PINECONE_NAME_SPACE } from '@/config/pinecone';
+import { PINECONE_INDEX_NAME, CONTEXT_FILE_EXTENSION, UPLOAD_FOLDER } from '@/config/pinecone';
+import fs from 'fs'
+import { BaseContextSettings, ContextSettings, QAContextSettings } from '@/utils/contextSettings';
+import { BaseChain } from 'langchain/chains';
 
 export default async function handler(
   req: NextApiRequest,
@@ -14,20 +17,29 @@ export default async function handler(
   if (!question) {
     return res.status(400).json({ message: 'No question in the request' });
   }
-  // OpenAI recommends replacing newlines with spaces for best results
-  const sanitizedQuestion = question.trim().replaceAll('\n', ' ');
 
-  const index = pinecone.Index(PINECONE_INDEX_NAME);
+  let chain: BaseChain | null = null;
 
-  /* create vectorstore*/
-  const vectorStore = await PineconeStore.fromExistingIndex(
-    new OpenAIEmbeddings({}),
-    {
-      pineconeIndex: index,
-      textKey: 'text',
-      namespace: PINECONE_NAME_SPACE,
-    },
-  );
+  const sendData = (data: string) => {
+    res.write(`data: ${data}\n\n`);
+  };
+
+  const sanitizedQuestion = question.trim().replaceAll('\n', ' ');  // OpenAI recommends replacing newlines with spaces for best results
+
+  const contextName = req.headers['x-context-name'] as string;
+
+  const context = ContextSettings.Create(contextName);
+
+  if (context.type == 'OpenAI-QA') {
+
+    const qaContextSettings = context as QAContextSettings;
+
+    //create chain
+    chain = await makeChain(qaContextSettings, (token: string) => {
+      sendData(JSON.stringify({ data: token }));
+    });
+
+  }
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -35,30 +47,22 @@ export default async function handler(
     Connection: 'keep-alive',
   });
 
-  const sendData = (data: string) => {
-    res.write(`data: ${data}\n\n`);
-  };
-
   sendData(JSON.stringify({ data: '' }));
-
-  //create chain
-  const chain = makeChain(vectorStore, (token: string) => {
-    sendData(JSON.stringify({ data: token }));
-  });
 
   try {
     //Ask a question
-    const response = await chain.call({
+    const response = await chain?.call({
       question: sanitizedQuestion,
       chat_history: history || [],
     });
 
-    console.log('response', response);
-    sendData(JSON.stringify({ sourceDocs: response.sourceDocuments }));
+    console.log('response', response?.text);
+    sendData(JSON.stringify({ sourceDocs: response?.sourceDocuments }));
   } catch (error) {
     console.log('error', error);
   } finally {
     sendData('[DONE]');
     res.end();
   }
+
 }

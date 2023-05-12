@@ -3,88 +3,109 @@ import { LLMChain, ChatVectorDBQAChain, loadQAChain } from 'langchain/chains';
 import { PineconeStore } from 'langchain/vectorstores';
 import { PromptTemplate } from 'langchain/prompts';
 import { CallbackManager } from 'langchain/callbacks';
+import { NEXT_PUBLIC_CONTEXTS } from '@/config/contexts';
+import { PINECONE_INDEX_NAME, RESERVED_FILE_EXTENSIONS, UPLOAD_FOLDER } from '@/config/pinecone';
+import fs from 'fs'
+import { QAContextSettings } from './contextSettings';
+import { pinecone } from './pinecone-client';
+import { OpenAIEmbeddings } from 'langchain/embeddings';
 
-const lang = 1;   // 0 = EN, 1 = DE
-
-
-const CONDENSE_PROMPT_TEXT = [
-`Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question.
-
-Chat History:
-{chat_history}
-Follow Up Input: {question}
-Standalone question:`,
-
-`Gegeben ist die folgende Unterhaltung und eine Folgefrage. Formuliere die Folgefrage um, so dass sie eine eigenständige Frage wird.
-
-Chat-Verlauf:
-{chat_history}
-Folgefrage: {question}
-Eigenständige Frage:`
-]
-
-const QA_PROMPT_TEXT = [
-
-`You are an AI assistant providing helpful advice. You are given the following extracted parts of a long document and a question. Provide a conversational answer based on the context provided.
-You should only provide hyperlinks that reference the context below. Do NOT make up hyperlinks.
-If you can't find the answer in the context below, just say "Hmm, I'm not sure." Don't try to make up an answer.
-If the question is not related to the context, politely respond that you are tuned to only answer questions that are related to the context.
-
-Question: {question}
-=========
-{context}
-=========
-Answer in Markdown:`,
-
-`Du bist ein KI-Assistent, der hilfreiche Ratschläge gibt. 
-Dir werden folgende auszugsweise Teile eines langen Dokuments und eine Frage gegeben. 
-Gib eine konversationsbasierte Antwort basierend auf dem bereitgestellten Kontext.
-Stelle bitte nur Hyperlinks bereit, die sich auf den untenstehenden Kontext beziehen. Bitte erfinde keine Hyperlinks.
-Falls du die Antwort im untenstehenden Kontext nicht finden kannst, sage einfach "Hmm, ich bin mir nicht sicher." Versuche nicht, eine Antwort zu erfinden.
-Falls die Frage nicht mit dem Kontext zusammenhängt, antworte höflich, dass du darauf abgestimmt bist, nur Fragen zu beantworten, die mit dem Kontext zusammenhängen.
-  
-Frage: {question}
-=========
-{context}
-=========
-Antworte in Markdown:`
-
-]
-
-const CONDENSE_PROMPT = PromptTemplate.fromTemplate(CONDENSE_PROMPT_TEXT[lang]);
-
-const QA_PROMPT = PromptTemplate.fromTemplate(QA_PROMPT_TEXT[lang],);
-
-export const makeChain = (
-  vectorstore: PineconeStore,
+export const makeChain = async (
+  contextSettings: QAContextSettings,
   onTokenStream?: (token: string) => void,
 ) => {
+  const index = pinecone.Index(PINECONE_INDEX_NAME);
+    
+  /* create vectorstore*/
+  const vectorStore = await PineconeStore.fromExistingIndex(
+    new OpenAIEmbeddings({}),
+    {
+      pineconeIndex: index,
+      textKey: 'text',
+      namespace: contextSettings.contextName,
+    },
+  );
+
   const questionGenerator = new LLMChain({
-    llm: new OpenAIChat({ temperature: 0 }),
-    prompt: CONDENSE_PROMPT,
+    llm: new OpenAIChat({ temperature: contextSettings.prepromptTemperature }),
+    prompt: PromptTemplate.fromTemplate(contextSettings.preprompt.join('\n')),
   });
+
   const docChain = loadQAChain(
     new OpenAIChat({
-      temperature: 0,
-      modelName: 'gpt-3.5-turbo', //  'gpt-3.5-turbo'  'gpt-4'        change this to older versions (e.g. gpt-3.5-turbo) if you don't have access to gpt-4
+      temperature: contextSettings.promptTemperature,
+      modelName: contextSettings.modelName, //  'gpt-3.5-turbo'  'gpt-4'        change this to older versions (e.g. gpt-3.5-turbo) if you don't have access to gpt-4
+      maxTokens: contextSettings.maxTokens,
       streaming: Boolean(onTokenStream),
       callbackManager: onTokenStream
         ? CallbackManager.fromHandlers({
             async handleLLMNewToken(token) {
               onTokenStream(token);
-              console.log(token);
             },
           })
         : undefined,
     }),
-    { prompt: QA_PROMPT },
+    { prompt: PromptTemplate.fromTemplate(contextSettings.prompt.join('\n')) },  // 'normal' prompt
   );
 
   return new ChatVectorDBQAChain({
-    vectorstore,
+    vectorstore: vectorStore,
     combineDocumentsChain: docChain,
     questionGeneratorChain: questionGenerator,
-    returnSourceDocuments: true,
-    k: 2, //number of source documents to return
+    returnSourceDocuments: contextSettings.returnSource,
+    k: contextSettings.numberSource, //number of source documents to return, 
   });
 };
+
+const fetchPrompt = (idx: number, namespace: string | undefined) => {
+  let prompt: string = '';
+  const filePath = `${UPLOAD_FOLDER}/${namespace}${RESERVED_FILE_EXTENSIONS[idx]}`;
+  try {
+    if (fs.existsSync(filePath)) {
+      prompt = fs.readFileSync(filePath, 'utf8');
+    }
+  } catch (error) {
+    console.log('loading prompt failed: ' + filePath);
+  }
+
+  if (prompt.length > 0) {
+    // prompt from file
+    console.log('prompt loaded: ' + filePath);
+    return PromptTemplate.fromTemplate(prompt);
+  } else if (idx === 1) {
+
+    // default preprompt for all subjects
+    prompt = `Gegeben ist die folgende Unterhaltung und eine Folgefrage. Formuliere die Folgefrage um, so dass sie eine eigenständige Frage wird.
+
+    Chat-Verlauf:
+    {chat_history}
+    Folgefrage: {question}
+    Eigenständige Frage:`
+  } else if (NEXT_PUBLIC_CONTEXTS[0] == namespace) {
+
+    // default prompt for first subject
+    prompt = `Du bist ein KI-Assistent. Du hilfst beim Erstellen von Marketing Texten für Kunden und Interessenten von ${NEXT_PUBLIC_CONTEXTS[0]}.  
+    Im Kontext bekommst du einzelne Texte aus einem längeren Dokument das von ${NEXT_PUBLIC_CONTEXTS[0]} geschrieben ist.
+    Beantworte die Frage konversationsbasiert und verwende dazu den bereitgestellten Kontext und andere Quellen zu den Themen IT und Individualsoftwareentwicklung.
+    Bitte erfinde keine Hyperlinks.
+      
+    Frage: {question}
+    =========
+    {context}
+    =========
+    Antworte in Markdown:`
+  } else {
+
+    // default additional subject prompt
+    prompt = `Du bist ein KI-Assistent. Im context bekommst du einzelne Texte aus einem oder mehreren längeren Dokumenten.
+    Beantworte die Frage konversationsbasiert und verwende dazu den context.
+    Bitte erfinde keine Hyperlinks.
+      
+    Frage: {question}
+    =========
+    {context}
+    =========
+    Antworte in Markdown:`
+  }
+  return PromptTemplate.fromTemplate(prompt);
+}

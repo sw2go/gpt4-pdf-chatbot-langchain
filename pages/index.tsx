@@ -4,9 +4,12 @@ import styles from '@/styles/Home.module.css';
 import { Message } from '@/types/chat';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import Image from 'next/image';
+import userIcon from 'public/usericon.png';
+import botIcon from 'public/bot-image.png'
 import ReactMarkdown from 'react-markdown';
 import LoadingDots from '@/components/ui/LoadingDots';
 import { Document } from 'langchain/document';
+import { NEXT_PUBLIC_PROVIDER_URL, NEXT_PUBLIC_CONTEXTS } from '@/config/contexts';
 import {
   Accordion,
   AccordionContent,
@@ -14,11 +17,12 @@ import {
   AccordionTrigger,
 } from '@/components/ui/accordion';
 
-export default function Home() {
+export default function ChatPage() {
   const [query, setQuery] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [sourceDocs, setSourceDocs] = useState<Document[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [contextName, setNamespace] = useState<string>(NEXT_PUBLIC_CONTEXTS[0]);
   const [messageState, setMessageState] = useState<{
     messages: Message[];
     pending?: string;
@@ -27,7 +31,7 @@ export default function Home() {
   }>({
     messages: [
       {
-        message: 'Hallo, was möchtest du die Dokumente fragen?',
+        message: `Hallo, was möchtest du wissen?`,
         type: 'apiMessage',
       },
     ],
@@ -80,6 +84,7 @@ export default function Home() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'x-context-name': contextName
         },
         body: JSON.stringify({
           question,
@@ -165,7 +170,16 @@ export default function Home() {
       <Layout>
         <div className="mx-auto flex flex-col gap-4">
           <h1 className="text-2xl font-bold leading-[1.1] tracking-tighter text-center">
-            Chat mit Dokumenten
+            <span className="mr-1">Chat mit</span> 
+            <select value={contextName} onChange={(e)=> {setNamespace(e.target.value)}}>
+              {NEXT_PUBLIC_CONTEXTS.map((namespace, index) => {
+                return(
+                        <option key={`option-${index}`} value={namespace}>
+                          {namespace}
+                        </option>
+                      );
+              })}
+            </select>
           </h1>
           <main className={styles.main}>
             <div className={styles.cloud}>
@@ -176,7 +190,7 @@ export default function Home() {
                   if (message.type === 'apiMessage') {
                     icon = (
                       <Image
-                        src="/bot-image.png"
+                        src={botIcon}   //"/bot-image.png"
                         alt="AI"
                         width="40"
                         height="40"
@@ -188,7 +202,7 @@ export default function Home() {
                   } else {
                     icon = (
                       <Image
-                        src="/usericon.png"
+                        src={userIcon}   //"/usericon.png"
                         alt="Me"
                         width="30"
                         height="30"
@@ -282,7 +296,7 @@ export default function Home() {
                     placeholder={
                       loading
                         ? 'Waiting for response...'
-                        : 'Worum geht es in den Dokumenten?'
+                        : `Deine Frage ...`
                     }
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
@@ -319,8 +333,8 @@ export default function Home() {
           </main>
         </div>
         <footer className="m-auto p-4">
-          <a href="https://github.com/sw2go/gpt4-pdf-chatbot-langchain">
-            Forked from Mayooear. Powered by LangChainAI, ChatGPT and Pinecone.
+          <a href={NEXT_PUBLIC_PROVIDER_URL}>
+            {NEXT_PUBLIC_CONTEXTS[0]} IT GmbH
           </a>
         </footer>
       </Layout>
